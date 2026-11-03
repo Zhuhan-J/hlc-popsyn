@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: >-
+  If you use this software, please cite the article below, which describes
+  the model. This Python implementation can be cited using the software
+  metadata in this file.
+type: software
+title: hlc-popsyn
+abstract: >-
+  Python implementation of the hierarchical mixture model for population
+  synthesis (Sun, Erath & Cai, 2018), ported from the authors' MATLAB code.
+authors:
+  - family-names: Jin
+    given-names: Zhuhan
+version: 0.1.0
+license: MIT
+repository-code: "https://github.com/Zhuhan-J/hlc-popsyn"
+preferred-citation:
+  type: article
+  title: A hierarchical mixture modeling framework for population synthesis
+  authors:
+    - family-names: Sun
+      given-names: Lijun
+    - family-names: Erath
+      given-names: Alexander
+    - family-names: Cai
+      given-names: Ming
+  journal: "Transportation Research Part B: Methodological"
+  volume: 114
+  start: 199
+  end: 212
+  year: 2018
+  doi: 10.1016/j.trb.2018.06.002

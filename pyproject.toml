@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hlc-popsyn"
+version = "0.1.0"
+description = "Python implementation of the hierarchical mixture model for population synthesis (Sun, Erath & Cai, 2018)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Zhuhan Jin" }]
+dependencies = [
+  "numpy>=1.24",
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7",
+  "ruff>=0.4",
+]
+
+[project.urls]
+Repository = "https://github.com/Zhuhan-J/hlc-popsyn"
+
+[project.scripts]
+hm-popsyn-run = "hm_popsyn.runner:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests add src/ to sys.path before importing the package so they also run uninstalled.
+"tests/*" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["hm_popsyn"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
