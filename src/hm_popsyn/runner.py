@@ -31,7 +31,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tol", type=float, default=1e-8)
     p.add_argument("--seed", type=int, default=12345)
     p.add_argument(
-        "--no-rejection", action="store_true", help="Skip two-person rejection correction"
+        "--no-rejection",
+        action="store_true",
+        help="Skip the rejection step for all household sizes",
     )
     p.add_argument(
         "--initial-oversample",

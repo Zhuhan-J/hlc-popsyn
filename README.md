@@ -84,6 +84,12 @@ and `select_model_grid` runs the $(G, M)$ grid search. I also adapted `Gibbs_uni
 the paper does not describe, as `gibbs_universal`, with symmetric Dirichlet priors in place of the
 MATLAB stick-breaking priors on the class weights. The pipeline does not use it.
 
+I also added `metrics.py`, taken from my own evaluation code. It computes SRMSE on marginal and
+bivariate distributions ([Borysov, Rich & Pereira, 2019](https://doi.org/10.1016/j.trc.2019.07.006))
+and precision, recall and F1 on complete attribute combinations
+([Kim & Bansal, 2023](https://doi.org/10.1016/j.trc.2023.104053)). Category bins are fixed to the
+codes in the target table, so scores stay comparable across runs.
+
 Extensions I use in my own research are not part of this package.
 
 ### Model architecture and data flow
@@ -112,7 +118,7 @@ flowchart TD
     grid -.->|"once per G, M pair"| fit
     prep -.-> gibbs["gibbs.gibbs_universal"]
     gibbs -.->|"posterior means"| gen
-    raw -.-> ev["evaluation.cramer_v_from_counts, evaluation.marginal_distribution"]
+    raw -.-> ev["evaluation.cramer_v_from_counts, evaluation.marginal_distribution, metrics.evaluate_synthetic"]
     final -.-> ev
 ```
 
@@ -143,6 +149,7 @@ and `kernels.logsumexp`.
 | Constant $c$ | Maximum over all cells | Maximum over cells where both distributions are positive, capped at 3; acceptance probability clipped at 1 | Different |
 | Output households | Rejects from 8 stacked copies of the synthetic rows; count not controlled | Exactly `n_households`: per-size quotas from the first draw, filled by fresh batches that are each filtered against their own proposal distribution | Different |
 | Evaluation | Cramér's V with smoothing 1e-6; marginals with `sumdims` | Same Cramér's V formula with smoothing 1e-12 (`cramer_v_from_counts`); `marginal_distribution` | Same |
+| SRMSE and precision, recall, F1 | Not in the MATLAB code | `metrics.srmse`, `metrics.precision_recall_f1`, `metrics.evaluate_synthetic`; `member_table` builds one row per individual | Added |
 | Figures | `run_draw_figures_3.m` and plots in the other scripts | Not included | Not ported |
 | Helpers | `int_hist.c`, `sum_eik.c`, `mnrnd_new.m`, `logsumexp.m`, `sumdims.m`, `randgamma.c` | `kernels.py` ports all but `randgamma`, which no MATLAB script calls; `sum_eik` adds a range check and `mnrnd_new` normalizes rows | Same |
 
@@ -158,7 +165,7 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-The package needs Python 3.10 or newer and NumPy 1.24 or newer. CI runs the lint and tests on
+The package needs Python 3.10 or newer, NumPy 1.24 or newer and pandas 1.5 or newer. CI runs the lint and tests on
 Python 3.10, 3.11 and 3.12.
 
 ### Tests
@@ -171,7 +178,7 @@ pytest -q
 ```text
 All checks passed!
 ...........                                                              [100%]
-11 passed in 1.42s
+18 passed in 3.78s
 ```
 
 The tests use small arrays defined inline. They check shapes, normalization and label ranges for
@@ -195,8 +202,7 @@ read the result file.
 `hm-popsyn-run --help` lists all options. The command defaults to 5 restarts, 1000 EM iterations,
 `--tol 1e-8` and `--seed 12345`. Called directly, `fit_em_with_restarts` defaults to the settings
 of the paper and `run_multilevel_1.m`: 20 restarts, a tolerance of 1e-10 and at most 4000
-iterations. The help text of `--no-rejection` still says "two-person", but the rejection step
-covers all household sizes of two or more.
+iterations.
 
 ### Input format
 
@@ -228,7 +234,14 @@ with no valid pair that includes its first member skips the test and is kept.
 ### Python API
 
 ```python
-from hm_popsyn import fit_and_generate, load_csv, marginal_distribution, prepare_from_merged_table
+from hm_popsyn import (
+    evaluate_synthetic,
+    fit_and_generate,
+    load_csv,
+    marginal_distribution,
+    member_table,
+    prepare_from_merged_table,
+)
 
 data = prepare_from_merged_table(load_csv("examples/toy_merged.csv"))
 result = fit_and_generate(
@@ -240,6 +253,11 @@ print(synth.household_data.shape, synth.individual_data.shape)
 # Household size is household attribute 3 in the toy data.
 print("input    ", marginal_distribution(data.grpdata[:, 3]).round(3))
 print("synthetic", marginal_distribution(synth.household_data[:, 3]).round(3))
+
+# One row per individual, household attributes repeated for each member.
+target = member_table(data.grpdata, data.inddata, data.indgid)
+synthetic = member_table(synth.household_data, synth.individual_data, synth.individual_group_id)
+scores = evaluate_synthetic(target, synthetic, label="Toy data, all members")
 ```
 
 After the rejection diagnostics, this prints:
@@ -248,9 +266,25 @@ After the rejection diagnostics, this prints:
 (1000, 4) (2539, 5)
 input     [0.272 0.274 0.184 0.148 0.122]
 synthetic [0.28  0.279 0.178 0.148 0.115]
+============================================================
+  Toy data, all members
+------------------------------------------------------------
+  Target rows:                       1,287
+  Synthetic rows:                    2,539
+  Variables (K):                         9
+  Marginal bins:                        34
+  SRMSE marginal:                   0.0457
+  SRMSE bivariate:                  0.1139
+  Precision:                        0.0232
+  Recall:                           0.0451
+  F1:                               0.0307
+  Distinct target / synthetic: 1,271 / 2,487
+============================================================
 ```
 
-The toy codes are independent random numbers, so these numbers show only that the code runs.
+The toy codes are independent random numbers, so these numbers show only that the code runs. With
+nine uniform attributes almost every combination is unique, which is why precision and recall are
+low here.
 
 ## Attribution and license
 

@@ -13,6 +13,13 @@ from .evaluation import cramer_v_from_counts, marginal_distribution
 from .gibbs import GibbsResult, gibbs_universal
 from .io import PreparedData, load_csv, prepare_from_merged_table
 from .kernels import int_hist, logsumexp, mnrnd_new, sum_eik, sumdims
+from .metrics import (
+    category_sets_from,
+    evaluate_synthetic,
+    member_table,
+    precision_recall_f1,
+    srmse,
+)
 from .pipeline import PipelineResult, fit_and_generate
 from .synthesis_eval import (
     SynthesisResult,
@@ -41,6 +48,11 @@ __all__ = [
     "PreparedData",
     "load_csv",
     "prepare_from_merged_table",
+    "category_sets_from",
+    "evaluate_synthetic",
+    "member_table",
+    "precision_recall_f1",
+    "srmse",
     "int_hist",
     "logsumexp",
     "mnrnd_new",

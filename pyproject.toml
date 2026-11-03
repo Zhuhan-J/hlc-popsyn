@@ -13,6 +13,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Zhuhan Jin" }]
 dependencies = [
   "numpy>=1.24",
+  "pandas>=1.5",
 ]
 classifiers = [
   "Programming Language :: Python :: 3",
