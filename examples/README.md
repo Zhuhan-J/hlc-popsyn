@@ -1,9 +1,9 @@
 # Toy example
 
-This example runs the full workflow on a small table of random integer codes. The table has no
-connection to any real data; it only has the column layout that `hm-popsyn-run` expects (see
-"Input format" in the main README). Run the commands from the repository root after
-`pip install -e ".[dev]"`.
+I use this example to run the full workflow on a small table of random integer codes. The table
+has no connection to any real data. It only has the column layout that `hm-popsyn-run` expects
+(see [Input format](../README.md#input-format) in the main README). Run the commands from the
+repository root after `pip install -e ".[dev]"`.
 
 ## 1. Make the toy data
 
@@ -15,9 +15,11 @@ python examples/make_toy_data.py
 Wrote 1287 individuals in 500 households to examples/toy_merged.csv
 ```
 
-The generated file is committed as `examples/toy_merged.csv` (about 35 KB). The script uses a
-fixed seed (`--seed 2018`) and 500 households by default, so rerunning it reproduces the same
-file. Household sizes are drawn from 1 to 5, and all other attributes are uniform random codes.
+The script uses a fixed seed (`--seed 2018`) and 500 households by default, so rerunning it
+rewrites the committed `examples/toy_merged.csv` (about 35 KB) with identical content. Household
+sizes are drawn from 1 to 5, and the first household always has one member, so shifting each
+column to a minimum of 1 leaves the sizes unchanged. All other attributes are uniform random
+codes.
 
 ## 2. Fit the model and generate a synthetic population
 
@@ -26,10 +28,9 @@ hm-popsyn-run --input examples/toy_merged.csv --output outputs/toy_result.npz \
     --G 4 --M 6 --n-households 1000 --n-restarts 2 --max-iter 500 --tol 1e-6 --seed 1
 ```
 
-The command fits EM with 2 restarts, generates 1000 households with the rejection step, and
-writes `outputs/toy_result.npz`. With these settings it finished in under a minute when this
-README was written. It prints only the rejection diagnostics. The first block of the real output
-was:
+The command fits EM with 2 restarts, generates 1000 households with the rejection step and writes
+`outputs/toy_result.npz`. It took about 15 seconds in my test run. It prints only the rejection
+diagnostics, and the first block of the output was:
 
 ```text
 [REJECT-First-pass 0] Applying rejection for size=2 households...
@@ -72,9 +73,11 @@ was:
 ====================================================================================================
 ```
 
-Six more blocks with the same two tables follow, one for each top-up batch
-(`[DIAG-REJECT] Top-up batch 1` to `Top-up batch 6`), until exactly 1000 households have been
-accepted. The acceptance rates are specific to this random data.
+The first draw has 1500 households (1.5 times the request). `M` in these lines is the constant $c$
+from the main README, and `f1=0` counts feature cells that hold sample households of that size but
+no synthetic ones. Six more blocks with the same two tables follow, one for each top-up batch
+(`[DIAG-REJECT] Top-up batch 1` to `Top-up batch 6`), until exactly 1000 households are accepted.
+The acceptance rates are specific to this random data.
 
 ## 3. Inspect the result
 
@@ -109,6 +112,35 @@ final log-lik       -10712.648
 ```
 
 EM converged after 369 iterations in the restart that was kept. The final population has exactly
-1000 households; the number of individuals follows from the generated household sizes.
-`allow_pickle=True` is needed because the per-attribute parameter arrays `log_phi_g` and
-`log_phi_m` are stored as object arrays. Only load files you created yourself this way.
+1000 households, and the number of individuals follows from the generated household sizes. All
+codes and class labels are 1-based. `allow_pickle=True` is needed because the per-attribute
+parameter arrays `log_phi_g` and `log_phi_m` are stored as object arrays, so I only load files I
+created myself this way.
+
+## 4. Choose G and M by BIC
+
+```python
+from hm_popsyn import load_csv, prepare_from_merged_table, select_model_grid
+
+data = prepare_from_merged_table(load_csv("examples/toy_merged.csv"))
+best, best_summary, grid = select_model_grid(
+    data.grpdata, data.indgid, data.inddata,
+    g_values=[2, 4], m_values=[3, 6], n_restarts=1, max_iter=300, tol=1e-6, seed=0,
+)
+for s in grid:
+    print(f"G={s.G} M={s.M} logL={s.best_log_likelihood:.1f} BIC={s.bic:.1f}")
+print("selected:", best_summary.G, best_summary.M)
+```
+
+```text
+G=2 M=3 logL=-10793.0 BIC=22087.2
+G=2 M=6 logL=-10756.1 BIC=22378.5
+G=4 M=3 logL=-10768.4 BIC=22224.3
+G=4 M=6 logL=-10711.4 BIC=22518.2
+selected: 2 3
+```
+
+Each grid cell runs `fit_em_with_restarts`. On these random codes the smallest model has the lowest
+BIC. `best` is the fitted `EMResult` of the selected cell; to generate from it, pass the chosen `G`
+and `M` to `hm-popsyn-run` or `fit_and_generate`, or pass its parameters to
+`generate_synthetic_population`.

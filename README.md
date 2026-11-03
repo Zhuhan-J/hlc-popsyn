@@ -2,103 +2,146 @@
 
 [![CI](https://github.com/Zhuhan-J/hlc-popsyn/actions/workflows/ci.yml/badge.svg)](https://github.com/Zhuhan-J/hlc-popsyn/actions/workflows/ci.yml)
 
-hlc-popsyn is an independent Python implementation of the hierarchical mixture model for
-population synthesis by Sun, Erath and Cai (2018), "A hierarchical mixture modeling framework
-for population synthesis", Transportation Research Part B 114, 199-212. Zhuhan Jin ported it
-from the authors' MATLAB code. The package fits household-level and individual-level latent
-classes to a merged household-individual table of categorical attributes, generates a synthetic
-population of households and their members, and applies a rejection step that corrects
-relationships between members of the same household. It is not the authors' official code.
+I ported the hierarchical mixture (hierarchical latent class, HLC) model for population synthesis
+by Sun, Erath and Cai (2018) from the authors' MATLAB code to Python. The package fits household
+and individual latent classes to a sample of households and their members, generates a synthetic
+population, and filters it with a rejection step that corrects relationships between members of
+the same household. It is an independent port, and the original authors do not maintain it.
 
-## What the model does
+## The original method
 
-Each household belongs to one of $G$ household latent classes with probability $\pi_g$, and
-given its class, each household attribute follows its own categorical distribution. Each member
-of a household in class $g$ belongs to one of $M$ individual latent classes with probability
-$\pi_{gm}$. The individual classes are universal: all household classes share the same
-individual-level attribute distributions, and only the weights $\pi_{gm}$ depend on $g$. Given
-its individual class, each individual attribute follows its own categorical distribution, so both
-levels are product-multinomial mixtures. The parameters are estimated by EM from several random
-starts, keeping the restart with the lowest BIC, and `select_model_grid` repeats this over a grid
-of $(G, M)$ values. A Gibbs sampler with Dirichlet-multinomial conjugate updates is included as a
-Bayesian alternative that returns posterior-mean parameters. Generation follows the model
-directly: draw a household class and its household attributes, then as many members as the
-household-size attribute indicates, each with an individual class and individual attributes.
-Members are conditionally independent given the household class, so pairwise relationships
-such as age gaps are not fully reproduced, and the paper (Sec. 4.4) corrects this with an
-acceptance-rejection step on two-person households. This implementation applies the same rule
-separately to every household size of two or more (see [Notes on MATLAB parity](#notes-on-matlab-parity))
-and redraws households until exactly the requested number is reached.
+The method is described in Lijun Sun, Alexander Erath and Ming Cai, "A hierarchical mixture
+modeling framework for population synthesis", Transportation Research Part B 114 (2018), 199-212,
+[doi:10.1016/j.trb.2018.06.002](https://doi.org/10.1016/j.trb.2018.06.002). Lijun Sun's MATLAB
+code is at
+[mcgill-smart-transport/population_synthesis_hierarchical](https://github.com/mcgill-smart-transport/population_synthesis_hierarchical)
+(MIT License).
 
-The log-likelihood that EM maximizes, as computed in `em_multilevel_across_universal`, is
+All attributes are categorical. Each household belongs to one of $G$ household classes, and given
+its class, each household attribute (household size included) follows its own categorical
+distribution. Each member belongs to one of $M$ individual classes, with weights that depend on
+the household class. The individual classes are universal: all household classes share their
+attribute distributions. For household $i$ with household attributes $x_{ik}$, $k = 1, \dots, h$,
+and members $j = 1, \dots, n_i$ with attributes $x_{ijk}$, $k = h+1, \dots, K$,
 
-$$
-\log L = \sum_{j} \log \sum_{g=1}^{G} \pi_g \prod_{k} \phi^{h}_{k}(x_{jk} \mid g)
-\prod_{i \in j} \sum_{m=1}^{M} \pi_{gm} \prod_{l} \phi^{p}_{l}(x_{jil} \mid m),
-$$
+```math
+p(\mathbf{x}_i) = \sum_{g=1}^{G} \lambda_g \prod_{k=1}^{h} \phi^{(k)}_{x_{ik} g} \prod_{j=1}^{n_i} \sum_{m=1}^{M} \mu_{gm} \prod_{k=h+1}^{K} \theta^{(k)}_{x_{ijk} m}
+```
 
-where $x_{jk}$ is household attribute $k$ of household $j$, $x_{jil}$ is attribute $l$ of
-member $i$, and $\phi^{h}_{k}$ and $\phi^{p}_{l}$ are the class-conditional category
-probabilities (`log_phi_g` and `log_phi_m` in the code). EM stops when the relative change
-$|L_t - L_{t-1}| / |L_{t-1}|$ falls below `tol`. Models are compared with
+In the code, `pi_g` and `pi_m` hold $\lambda$ and $\mu$, and `log_phi_g` and `log_phi_m` hold
+$\log\phi$ and $\log\theta$. The parameters are estimated by EM from several random starts, and
+$G$ and $M$ are chosen by $\mathrm{BIC} = -2\log L + D_f \log n$, where $n$ is the number of
+individuals, $d_k$ is the number of categories of attribute $k$, and
 
-$$
-\mathrm{BIC} = -2 \log L + D_f \log n, \qquad
-D_f = (G - 1) + G(M - 1) + G \sum_{k} (d^{h}_{k} - 1) + M \sum_{l} (d^{p}_{l} - 1),
-$$
+```math
+D_f = (G-1) + G(M-1) + G\sum_{k=1}^{h}(d_k - 1) + M\sum_{k=h+1}^{K}(d_k - 1)
+```
 
-where $n$ is the number of individuals and $d^{h}_{k}$, $d^{p}_{l}$ are the numbers of
-categories. In the rejection step, a proposed household with features $(y_1, y_2)$ is accepted
-with probability
+A synthetic household is drawn by sampling its class and household attributes, then as many
+members as its household-size attribute gives, each with an individual class and attributes.
+Members are independent given the household class, so pairs such as couples are not reproduced
+well. For two-person households the paper adds a rejection step. Let $y_1$ be the absolute age
+difference and $y_2$ the absolute sex difference of the two members, $f_1$ their distribution in
+the synthetic population and $f_2$ their distribution in the sample. A household is accepted with
+probability
 
-$$
-\alpha(y_1, y_2) = \min\left(1, \frac{f_2(y_1, y_2)}{c \, f_1(y_1, y_2)}\right), \qquad
-c = \min\left(3, \max_{y_1, y_2} \frac{f_2(y_1, y_2)}{f_1(y_1, y_2)}\right),
-$$
+```math
+\alpha_i = \frac{f_2(y_{i1}, y_{i2})}{c \, f_1(y_{i1}, y_{i2})}, \qquad c = \max_{y_1, y_2} \frac{f_2(y_1, y_2)}{f_1(y_1, y_2)}
+```
 
-where $f_1$ is the feature distribution of the synthetic households, $f_2$ is the distribution in
-the input data, and the maximum runs over cells where both are positive. The paper calls the
-constant $c$ "$M$"; it is renamed here to avoid a clash with the number of individual classes.
+The paper names this constant $M$. I write $c$ to keep $M$ for the number of individual classes,
+but the diagnostics printed by the code still call it `M`.
 
-## Architecture
+## What I implemented and changed
+
+I translated the universal-class EM (`EM_multilevel_across.m`), the parameter count, BIC and
+restarts (`run_multilevel_1.m`), the generator (`run_create_2.m`), the rejection step
+(`run_two_within_the_same_4.m`), Cramér's V and the MATLAB and MEX helpers into a Python package
+with a command-line tool, `hm-popsyn-run`. Category codes stay 1-based, as in MATLAB. On top of
+the port I made these changes:
+
+1. Rejection covers every household size of two or more, with separate target and proposal
+   distributions for each size. A household's features are the mean absolute differences between
+   its first listed member and each other member; for two-person households this is the paper's
+   pairwise difference. I measure the age difference in ordinal age positions grouped into 5
+   bins, and I use the difference between coarse employment groups in place of the sex
+   difference.
+2. I compute $c$ only over cells where both distributions are positive and cap it at 3, close to
+   the value of 2.97 reported in the paper. Household sizes with fewer than 30 households in the
+   sample skip the test, and all their households are kept.
+3. `generate_with_multi_size_rejection` draws 1.5 times the requested number of households,
+   applies rejection, and draws fresh top-up batches until exactly `n_households` households are
+   accepted. It keeps the household-size mix of the first draw, and the output has no duplicated
+   households.
+4. `fit_em_with_restarts` keeps the restart with the lowest BIC, and `select_model_grid` searches
+   a grid of $(G, M)$ values.
+5. `gibbs_universal` is a Gibbs sampler adapted from `Gibbs_universal.m`, with symmetric
+   Dirichlet priors in place of the MATLAB stick-breaking priors on the class weights. The
+   pipeline does not use it.
+
+Extensions I use in my own research are not part of this package.
+
+### Model architecture and data flow
 
 ```mermaid
 flowchart TD
     csv[("merged CSV")] --> load["io.load_csv"]
     load --> prep["io.prepare_from_merged_table"]
-    prep --> em["em.fit_em_with_restarts"]
-    em --> core["em.em_multilevel_across_universal (one call per restart)"]
-    prep -.-> gibbs["gibbs.gibbs_universal (alternative inference, not in the pipeline)"]
-    em --> raw["synthesis_eval.generate_synthetic_population: synthetic_raw"]
-    em --> loop["synthesis_eval.generate_with_multi_size_rejection: synthetic_final"]
-    loop --> draw["generate_synthetic_population (oversampled first draw, then top-up batches)"]
-    draw --> rej["apply_rejection_by_size, extract_pair_features_by_size, rejection_filter_by_size"]
-    rej --> loop
+    prep -->|"grpdata, indgid, inddata"| fit["em.fit_em_with_restarts"]
+    fit -->|"once per restart"| core["em.em_multilevel_across_universal"]
+    core -->|"restart with lowest BIC"| params["EMResult"]
+    params --> gen["synthesis_eval.generate_synthetic_population"]
+    gen --> raw["synthetic_raw"]
+    params --> draw
+    subgraph rejloop ["synthesis_eval.generate_with_multi_size_rejection"]
+        draw["generate_synthetic_population, first draw then top-up batches"] --> rej["apply_rejection_by_size"]
+        rej --> feat["extract_pair_features_by_size"]
+        feat --> filt["rejection_filter_by_size, one call per household size"]
+        filt -->|"top up while short"| draw
+    end
+    prep -->|"input sample as target"| feat
+    filt -->|"exactly n_households"| final["synthetic_final"]
+    final --> npz[("result .npz")]
+    prep -.-> grid["em.select_model_grid"]
+    grid -.->|"once per G, M pair"| fit
+    prep -.-> gibbs["gibbs.gibbs_universal"]
+    gibbs -.->|"posterior means"| gen
     raw -.-> ev["evaluation.cramer_v_from_counts, evaluation.marginal_distribution"]
-    loop -.-> ev
+    final -.-> ev
 ```
 
-`pipeline.fit_and_generate` runs the solid path from the prepared arrays onward and returns a
-`PipelineResult` with `em_result`, `synthetic_raw` and `synthetic_final`. `runner.main` (the
-`hm-popsyn-run` command) adds CSV loading and writes an `.npz` file. Dashed arrows are steps you
-call yourself. `kernels.py` holds the low-level helpers used by EM.
+`hm-popsyn-run` (`runner.main`) follows the solid arrows. It loads and prepares the CSV, calls
+`pipeline.fit_and_generate` for every step from `fit_em_with_restarts` to `synthetic_final`, and
+writes the fitted parameters, the EM likelihood trace, the convergence flag and `synthetic_final`
+to an `.npz` file. `synthetic_raw` is a separate draw without rejection that `fit_and_generate`
+returns for comparison. Dashed arrows are functions you call yourself. EM uses `kernels.sum_eik`
+and `kernels.logsumexp`.
 
-## Theory-to-code map
+## Same as the original, and different
 
-| Paper | Python | MATLAB source |
-| --- | --- | --- |
-| Model, likelihood and EM updates with universal individual classes (Sec. 3.3-3.4, Eq. 8-13) | `em.em_multilevel_across_universal` | `EM_multilevel_across.m` |
-| Parameter count and BIC model selection (Sec. 4.2, Eq. 14) | `em.count_parameters_universal`, `em.bic_score`, `em.fit_em_with_restarts`, `em.select_model_grid` | `run_multilevel_1.m` |
-| Bayesian estimation by Gibbs sampling (Sec. 3.3, 4.2) | `gibbs.gibbs_universal` | `Gibbs_universal.m` |
-| Generation of households and members (Sec. 4.3, Eq. 2-3) | `synthesis_eval.generate_synthetic_population` | `run_create_2.m` |
-| Rejection correction (Sec. 4.4, Eq. 16) | `synthesis_eval.rejection_filter_by_size`, `apply_rejection_by_size`, `generate_with_multi_size_rejection` (`apply_two_person_rejection` is kept as a deprecated alias of `apply_rejection_by_size`) | `run_two_within_the_same_4.m` |
-| Evaluation with Cramer's V and marginals (Sec. 4.3-4.4, Eq. 15) | `evaluation.cramer_v_from_counts`, `evaluation.marginal_distribution` | `run_create_2.m`, `run_two_within_the_same_4.m`, `run_draw_figures_3.m` |
-| Data preparation (sorting, 1-based codes, one row per household) | `io.prepare_from_merged_table` | `run_multilevel_1.m`, `run_create_2.m` |
-| Numerical helpers | `kernels.int_hist`, `sum_eik`, `mnrnd_new`, `logsumexp`, `sumdims` | `int_hist.c`, `sum_eik.c`, `mnrnd_new.m`, `logsumexp.m`, `sumdims.m` |
+| Component | Original MATLAB | This package | Status |
+| --- | --- | --- | --- |
+| Model with universal individual classes | `EM_multilevel_across.m` | `em.em_multilevel_across_universal` | Same |
+| Model with class-specific individual classes | `EM_multilevel.m` | Not included | Not ported |
+| EM start | Normalized Gamma(1, `con`) draws, or an optional tensor-factorization start | Normalized Gamma(1, `concentration`) draws only; in both versions the scale cancels after normalization, so it does not change the start | Tensor start dropped |
+| E-step, M-step, log-likelihood | `EM_multilevel_across.m` | Same updates in the same order; floors values at 1e-12 where MATLAB adds machine epsilon | Same |
+| Stopping rule | Relative change of the log-likelihood at most `tol`, checked from iteration 3; at most `maxIter - 1` iterations | Same rule, checked from iteration 2; at most `max_iter` iterations; adds a `converged` flag | Same rule |
+| Parameter count and BIC | `run_multilevel_1.m`: best log-likelihood of the run, log of the number of individuals | `em.count_parameters_universal`, `em.bic_score` | Same |
+| Restarts | 20 runs saved; `run_create_2.m` uses a run picked by hand | `em.fit_em_with_restarts` keeps the lowest BIC | Different |
+| G and M search | Loads a precomputed `bic.mat`; the grid code is not in the repository | `em.select_model_grid` | Added |
+| Gibbs sampler | Stick-breaking priors on class weights with resampled concentration parameters; returns every draw | Symmetric Dirichlet priors on all parameters; returns posterior means after burn-in and thinning, and class-label traces | Different |
+| Input preparation | Sorts rows, shifts each column to a minimum of 1, computes household size from row counts and inserts it as the fourth household attribute | Same sort and shift; household size must already be a column and is shifted with the others; household ids are remapped to 1..N | Different |
+| Generation | Household class, household attributes, members from the size attribute; member attributes from the class mixture; 10 times the number of sample households | Same distribution; draws and returns each member's class; generates `n_households` | Same model |
+| Rejection scope | Two-person households, one pass, sample as target | Every size of two or more, one target and proposal per size, sample as target | Different |
+| Rejection features | Absolute differences of the raw age and sex codes, plus 1 | Mean difference to the first member; ordinal age in 5 bins; employment groups | Different |
+| Constant $c$ | Maximum over all cells | Maximum over cells where both distributions are positive, capped at 3 | Different |
+| Output households | Rejects from 8 stacked copies of the synthetic rows; count not controlled | Redraws until exactly `n_households`; no duplicates | Different |
+| Evaluation | Cramér's V with smoothing 1e-6; marginals with `sumdims`; figures | Same Cramér's V formula with smoothing 1e-12 (`cramer_v_from_counts`); `marginal_distribution`; no figures | Same formulas |
+| Helpers | `int_hist.c`, `sum_eik.c`, `mnrnd_new.m`, `logsumexp.m`, `sumdims.m`, `randgamma.c` | `kernels.py` ports all but `randgamma`, which no MATLAB script calls; `sum_eik` adds a range check and `mnrnd_new` normalizes rows | Same |
 
-## Installation
+## Install, run and reproduce
 
-Requires Python 3.10 or newer and NumPy 1.24 or newer.
+### Install
 
 ```bash
 git clone https://github.com/Zhuhan-J/hlc-popsyn.git
@@ -108,9 +151,27 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-## Quick start
+The package needs Python 3.10 or newer and NumPy 1.24 or newer. CI runs the lint and tests on
+Python 3.10, 3.11 and 3.12.
 
-Generate the random toy table, then fit and generate with small settings:
+### Tests
+
+```bash
+ruff check .
+pytest -q
+```
+
+```text
+All checks passed!
+...........                                                              [100%]
+11 passed in 1.42s
+```
+
+The tests use small arrays defined inline. They check shapes, normalization and label ranges for
+the helpers, EM, the Gibbs sampler and the generator, and run the pipeline end to end. Their
+inputs fall under the 30-household guard, so they do not test acceptance rates.
+
+### Toy example
 
 ```bash
 python examples/make_toy_data.py
@@ -118,252 +179,86 @@ hm-popsyn-run --input examples/toy_merged.csv --output outputs/toy_result.npz \
     --G 4 --M 6 --n-households 1000 --n-restarts 2 --max-iter 500 --tol 1e-6 --seed 1
 ```
 
-[examples/README.md](examples/README.md) shows the output of this run and how to inspect the
-result file.
+The first command writes 500 households and 1287 individuals of random codes to
+`examples/toy_merged.csv`, identical to the committed file. The second fits EM with two restarts,
+generates 1000 households with rejection, prints diagnostics for each rejection batch and writes
+`outputs/toy_result.npz`. It took about 15 seconds in my test run.
+[examples/README.md](examples/README.md) shows the output and how to read the result file.
+
+`hm-popsyn-run --help` lists all options. The command defaults to 5 restarts, 1000 EM iterations,
+`--tol 1e-8` and `--seed 12345`. Called directly, `fit_em_with_restarts` defaults to the settings
+of the paper and `run_multilevel_1.m`: 20 restarts, a tolerance of 1e-10 and at most 4000
+iterations. The help text of `--no-rejection` still says "two-person", but the rejection step
+covers all household sizes of two or more.
 
 ### Input format
 
-`hm-popsyn-run` reads a numeric CSV with one header line and one row per individual. With the
-default column mapping of `prepare_from_merged_table` (0-based column indices):
+`hm-popsyn-run` reads a numeric CSV with one header line and one row per individual, laid out like
+the MATLAB table after its household-size column is inserted. With the default column mapping of
+`prepare_from_merged_table` (0-based):
 
 | Columns | Content |
 | --- | --- |
 | 0 | household id |
 | 1 | individual id within the household |
-| 2, 3, 4, 5 | household attributes; column 5 is the household size and must equal the number of rows of that household |
+| 2, 3, 4, 5 | household attributes; column 5 is the household size |
 | 6, 7, 8, 10, 11 | individual attributes |
 | 9 | not used |
 
-All values must be integer codes. Each column is shifted so that its minimum becomes 1, and
-household ids are remapped to 1..N. The household-size column is used directly as the number of
-members to generate, so its codes should be the actual sizes starting at 1.
+All values must be integer codes. Each column is shifted so that its minimum becomes 1, and the
+generator uses the household-size code directly as the number of members. The sample therefore
+needs at least one single-person household, and each size code should equal the number of rows of
+its household.
 
 The rejection step reads individual attribute 0 as an ordinal age code and individual attribute 1
-as a second attribute that is mapped to coarse groups. The default lookup tables
-`AGE_CODE_TO_ORDER` and `EMPLOY_CODE_TO_GROUP` in `synthesis_eval.py` assume one specific coding.
-Codes outside these tables are treated as invalid: such members are ignored, and a household whose
-first member, or all of whose other members, are invalid skips the rejection test and is kept. For other
-codings, pass your own tables to `fit_and_generate` through `age_code_to_order` and
-`employ_code_to_group` (the command-line tool always uses the defaults).
-
-### Command-line options
-
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `--input` | required | Path to the merged household-individual CSV |
-| `--output` | required | Output `.npz` file path |
-| `--G` | required | Number of household latent classes |
-| `--M` | required | Number of individual latent classes |
-| `--n-households` | required | Number of synthetic households to generate |
-| `--n-restarts` | 5 | EM restarts; the restart with the lowest BIC is kept |
-| `--max-iter` | 1000 | Maximum EM iterations per restart |
-| `--concentration` | 1.0 | Scale of the Gamma draws used for random initialization |
-| `--tol` | 1e-8 | Relative log-likelihood change that stops EM |
-| `--seed` | 12345 | Random seed |
-| `--no-rejection` | off | Skip the rejection correction |
-| `--initial-oversample` | 1.5 | Multiplier for the first draw when rejection is enabled (at least 1.0) |
-| `--topup-factor` | 1.7 | Multiplier for top-up batch size when rejection leaves a shortfall |
-| `--max-topup-iters` | 10 | Maximum number of top-up batches before raising an error |
-
-With rejection enabled, the command prints a diagnostic block for every batch (proposed and
-accepted households per size, and the constant $c$, shown as `M`).
-
-The `.npz` output holds the fitted parameters `pi_g`, `pi_m`, `log_phi_g` and `log_phi_m`, the
-final synthetic population `household_data`, `individual_data`, `individual_group_id`,
-`household_class` and `individual_class` (all 1-based), and the EM diagnostics `likelihood` (one
-value per iteration) and `converged`. `log_phi_g` and `log_phi_m` are stored as object arrays,
-so load the file with `np.load(path, allow_pickle=True)`, and only do so for files you created.
+as the attribute it maps to groups. The default lookup tables (`AGE_CODE_TO_ORDER` and
+`EMPLOY_CODE_TO_GROUP` in `synthesis_eval.py`) assume one specific coding. For other codings, pass
+your own tables to `fit_and_generate` through `age_code_to_order` and `employ_code_to_group`; the
+command-line tool always uses the defaults. The age binning assumes 18 ordinal positions
+(`AGE_DIFF_MAX`) in both cases. Members with codes outside the tables are ignored, and a household
+with no valid pair that includes its first member skips the test and is kept.
 
 ### Python API
 
-Full pipeline and simple checks against the input data (run from the repository root after
-creating the toy data):
-
 ```python
-import numpy as np
-
-from hm_popsyn import (
-    cramer_v_from_counts,
-    fit_and_generate,
-    load_csv,
-    marginal_distribution,
-    prepare_from_merged_table,
-)
+from hm_popsyn import fit_and_generate, load_csv, marginal_distribution, prepare_from_merged_table
 
 data = prepare_from_merged_table(load_csv("examples/toy_merged.csv"))
 result = fit_and_generate(
-    grpdata=data.grpdata,
-    indgid=data.indgid,
-    inddata=data.inddata,
-    G=4,
-    M=6,
-    n_households=1000,
-    n_restarts=2,
-    max_iter=500,
-    tol=1e-6,
-    seed=1,
-)
-em, synth = result.em_result, result.synthetic_final
-print("converged:", em.converged, "after", em.likelihood.size, "iterations")
-print("households:", synth.household_data.shape, "individuals:", synth.individual_data.shape)
-
-# Household-size marginal (household attribute 3) in the input and synthetic data.
-print("observed :", marginal_distribution(data.grpdata[:, 3]).round(3))
-print("synthetic:", marginal_distribution(synth.household_data[:, 3]).round(3))
-
-
-def counts(a, b):
-    table = np.zeros((a.max(), b.max()))
-    np.add.at(table, (a - 1, b - 1), 1)
-    return table
-
-
-# Cramer's V between individual attributes 0 and 1.
-v_obs = cramer_v_from_counts(counts(data.inddata[:, 0], data.inddata[:, 1]))
-v_syn = cramer_v_from_counts(counts(synth.individual_data[:, 0], synth.individual_data[:, 1]))
-print(f"Cramer's V observed={v_obs:.3f} synthetic={v_syn:.3f}")
-```
-
-Output, after the rejection diagnostics:
-
-```text
-converged: True after 369 iterations
-households: (1000, 4) individuals: (2539, 5)
-observed : [0.272 0.274 0.184 0.148 0.122]
-synthetic: [0.28  0.279 0.178 0.148 0.115]
-Cramer's V observed=0.051 synthetic=0.074
-```
-
-The toy data are independent random codes, so these numbers only show that the functions run;
-they say nothing about fit quality on real data.
-
-Lower-level building blocks:
-
-```python
-import numpy as np
-
-from hm_popsyn import (
-    generate_synthetic_population,
-    gibbs_universal,
-    load_csv,
-    prepare_from_merged_table,
-    select_model_grid,
-)
-
-data = prepare_from_merged_table(load_csv("examples/toy_merged.csv"))
-
-# BIC grid search over (G, M); each cell runs fit_em_with_restarts.
-best, best_summary, grid = select_model_grid(
     data.grpdata, data.indgid, data.inddata,
-    g_values=[2, 4], m_values=[3, 6], n_restarts=1, max_iter=300, tol=1e-6, seed=0,
+    G=4, M=6, n_households=1000, n_restarts=2, max_iter=500, tol=1e-6, seed=1,
 )
-for s in grid:
-    print(f"G={s.G} M={s.M} logL={s.best_log_likelihood:.1f} BIC={s.bic:.1f}")
-print("selected:", best_summary.G, best_summary.M)
-
-# Draw households from the fitted parameters (no rejection step).
-synth = generate_synthetic_population(
-    n_households=200,
-    pi_g=best.pi_g,
-    pi_m=best.pi_m,
-    phi_g=[np.exp(x) for x in best.log_phi_g],
-    phi_m=[np.exp(x) for x in best.log_phi_m],
-    household_size_col=3,
-    rng=np.random.default_rng(0),
-)
+synth = result.synthetic_final
 print(synth.household_data.shape, synth.individual_data.shape)
-
-# Gibbs sampler (explicit Python loops over households and individuals; small subset here).
-keep = data.indgid <= 50
-post = gibbs_universal(
-    data.grpdata[:50], data.indgid[keep], data.inddata[keep],
-    G=2, M=3, n_iter=60, burn_in=20, thin=5, seed=0,
-)
-print(post.pi_g_mean.round(3), post.z_trace.shape)
+# Household size is household attribute 3 in the toy data.
+print("input    ", marginal_distribution(data.grpdata[:, 3]).round(3))
+print("synthetic", marginal_distribution(synth.household_data[:, 3]).round(3))
 ```
 
-Output:
+After the rejection diagnostics, this prints:
 
 ```text
-G=2 M=3 logL=-10793.0 BIC=22087.2
-G=2 M=6 logL=-10756.1 BIC=22378.5
-G=4 M=3 logL=-10768.4 BIC=22224.3
-G=4 M=6 logL=-10711.4 BIC=22518.2
-selected: 2 3
-(200, 4) (505, 5)
-[0.543 0.457] (8, 50)
+(1000, 4) (2539, 5)
+input     [0.272 0.274 0.184 0.148 0.122]
+synthetic [0.28  0.279 0.178 0.148 0.115]
 ```
 
-## Testing
-
-```bash
-pytest
-ruff check .
-```
-
-The tests use small synthetic arrays defined inline and are written with `unittest`, so pytest
-discovers them as they are. Suggested reading order, from building blocks to the full pipeline:
-
-1. `tests/test_kernels.py` checks the MATLAB/MEX helpers in `kernels.py`: 1-based histogram
-   counts (`int_hist`), grouped sums by a 1-based mask (`sum_eik`), one-hot categorical sampling
-   (`mnrnd_new`), and MATLAB-style summation over dimensions (`sumdims`).
-2. `tests/test_em.py` runs `em_multilevel_across_universal` on two small problems and checks the
-   shapes of `pi_g`, `pi_m`, `wj` and `x_jik`, that probabilities sum to 1, that responsibilities
-   lie in [0, 1], and that the likelihood trace is non-empty and finite.
-3. `tests/test_synthesis.py` checks `generate_synthetic_population`: household and individual
-   matrix shapes, 1-based class labels within range, and one group id per generated individual.
-4. `tests/test_gibbs.py` checks `gibbs_universal`: posterior-mean shapes, trace dimensions, and
-   normalization of `pi_g_mean` and `pi_m_mean`.
-5. `tests/test_pipeline.py` runs `prepare_from_merged_table` and `fit_and_generate` end to end
-   with rejection enabled and checks shapes and the validity of group ids after rejection. With
-   these small inputs every household size has fewer than 30 target households, so the sparsity
-   guard skips the acceptance test; the test covers the plumbing, not acceptance rates.
-
-## Notes on MATLAB parity
-
-- Category codes are 1-based throughout, as in MATLAB. `prepare_from_merged_table` shifts every
-  column so its minimum is 1 (the MATLAB scripts use `bsxfun(@minus, data, min(data)-1)`), sorts
-  rows by household and individual id, and remaps household ids to 1..N. Generated
-  `household_class`, `individual_class` and `individual_group_id` are 1-based; NumPy indexing
-  uses `code - 1` internally.
-- The MATLAB scripts read an 11-column table and insert a household-size column computed with
-  `int_hist`, giving `grplvl = [3,4,5,6]` and `indlvl = [7,8,9,11,12]`. The Python loader expects
-  that size column to be present already, so its default columns (2, 3, 4, 5) and
-  (6, 7, 8, 10, 11) are the 0-based equivalents.
-- `int_hist` and `sum_eik` reproduce the C MEX files and raise an error on out-of-range codes.
-  `logsumexp` reduces over axis 0, matching the MATLAB default `dim = 1`. `sumdims` takes
-  MATLAB-style 1-based dimensions.
-- EM omits the tensor-based initialization path of `EM_multilevel_across.m`; parameters start
-  from normalized Gamma(1, `concentration`) draws. The log-likelihood at each iteration is
-  computed from the E-step terms and the updated $\pi_g$, mirroring the MATLAB code. Each restart
-  uses its own NumPy generator derived from `seed`, so runs are reproducible in Python but are not
-  numerically identical to MATLAB runs, whose random streams differ.
-- Rejection differs from the paper and from `run_two_within_the_same_4.m` in these ways:
-  - The paper uses the age difference and the sex difference of the two members. This port uses
-    the age difference, converted to an ordinal position with `age_code_to_order` and grouped
-    into `age_diff_n_bins` bins (default 5), and the difference between group indices of a second
-    attribute (`employ_col`, mapped with `employ_code_to_group`). `fit_and_generate` still accepts
-    `sex_col` but treats it as a deprecated alias of `employ_col`.
-  - The rule is applied separately to each household size of two or more. Features are the mean
-    absolute difference between the first listed member and each other member, rounded to an
-    integer; for two-person households this equals the single pairwise difference.
-  - The constant $c$ is computed over cells where both distributions are positive and is capped
-    at 3. Sizes with fewer than `min_target_samples` (default 30) households in the input data
-    skip the test, and all their households are accepted.
-  - The MATLAB script stacks eight copies of the synthetic two-person rows before rejecting.
-    `generate_with_multi_size_rejection` instead draws fresh households (an oversampled first
-    draw, then top-up batches) until it has exactly `n_households`, with the household-size mix
-    of the first draw, so the output has no duplicated rows.
-- `synthetic_raw` in `PipelineResult` is a separate draw of `n_households` without rejection.
-  `synthetic_final` is generated independently with its own generator (seed + 1).
+The toy codes are independent random numbers, so these numbers show only that the code runs.
 
 ## Attribution and license
 
-The model and the original MATLAB implementation are by Lijun Sun, with the paper co-authored
-by Alexander Erath and Ming Cai. The MATLAB code is available at
+The model and the original MATLAB code are by Lijun Sun, and the paper is co-authored by Alexander
+Erath and Ming Cai. The MATLAB code is published at
 <https://github.com/mcgill-smart-transport/population_synthesis_hierarchical> under the MIT
-license. This repository is a Python port of that code and is not maintained by the original
-authors. If you use it, please cite the paper ([doi:10.1016/j.trb.2018.06.002](https://doi.org/10.1016/j.trb.2018.06.002)):
+License. This repository is my Python port of it. It contains no survey or other real data:
+`examples/toy_merged.csv` holds random integer codes written by `examples/make_toy_data.py`.
+
+The package is released under the MIT License ([LICENSE](LICENSE)). The license keeps the original
+copyright notice (2017, Lijun Sun) and adds mine (2026, Zhuhan Jin).
+
+## Citation
+
+If you use this package, please cite the paper:
 
 ```bibtex
 @article{sun2018hierarchical,
@@ -377,11 +272,4 @@ authors. If you use it, please cite the paper ([doi:10.1016/j.trb.2018.06.002](h
 }
 ```
 
-Citation metadata for this software is in [CITATION.cff](CITATION.cff).
-
-This repository contains no survey data or any other real data. The only data file,
-`examples/toy_merged.csv`, is random integer codes generated by `examples/make_toy_data.py`.
-
-Released under the MIT License (see [LICENSE](LICENSE)). The license keeps the original copyright
-notice of the MATLAB code (2017, Lijun Sun) and adds one for the Python implementation (2026,
-Zhuhan Jin).
+Citation metadata for the software itself is in [CITATION.cff](CITATION.cff).
