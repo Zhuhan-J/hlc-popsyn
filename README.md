@@ -29,9 +29,10 @@ p(\mathbf{x}_i) = \sum_{g=1}^{G} \lambda_g \prod_{k=1}^{h} \phi^{(k)}_{x_{ik} g}
 ```
 
 In the code, `pi_g` and `pi_m` hold $\lambda$ and $\mu$, and `log_phi_g` and `log_phi_m` hold
-$\log\phi$ and $\log\theta$. The parameters are estimated by EM from several random starts, and
-$G$ and $M$ are chosen by $\mathrm{BIC} = -2\log L + D_f \log n$, where $n$ is the number of
-individuals, $d_k$ is the number of categories of attribute $k$, and
+$\log\phi$ and $\log\theta$. The parameters are estimated by EM. For each $(G, M)$ the paper runs EM
+20 times from random starts and keeps the run with the highest log-likelihood, and it chooses $G$
+and $M$ by a grid search on $\mathrm{BIC} = -2\log L + D_f \log \sum_i n_i$, where
+$L = \prod_i p(\mathbf{x}_i)$, $d_k$ is the number of categories of attribute $k$, and
 
 ```math
 D_f = (G-1) + G(M-1) + G\sum_{k=1}^{h}(d_k - 1) + M\sum_{k=h+1}^{K}(d_k - 1)
@@ -50,7 +51,8 @@ probability
 ```
 
 The paper names this constant $M$. I write $c$ to keep $M$ for the number of individual classes,
-but the diagnostics printed by the code still call it `M`.
+but the diagnostics printed by the code still call it `M`. The paper adds that "the same procedure
+can be applied for other household types (e.g., three-person)".
 
 ## What I implemented and changed
 
@@ -58,26 +60,29 @@ I translated the universal-class EM (`EM_multilevel_across.m`), the parameter co
 restarts (`run_multilevel_1.m`), the generator (`run_create_2.m`), the rejection step
 (`run_two_within_the_same_4.m`), Cramér's V and the MATLAB and MEX helpers into a Python package
 with a command-line tool, `hm-popsyn-run`. Category codes stay 1-based, as in MATLAB. On top of
-the port I made these changes:
+the port I changed the rejection step:
 
 1. Rejection covers every household size of two or more, with separate target and proposal
-   distributions for each size. A household's features are the mean absolute differences between
-   its first listed member and each other member; for two-person households this is the paper's
-   pairwise difference. I measure the age difference in ordinal age positions grouped into 5
-   bins, and I use the difference between coarse employment groups in place of the sex
-   difference.
-2. I compute $c$ only over cells where both distributions are positive and cap it at 3, close to
-   the value of 2.97 reported in the paper. Household sizes with fewer than 30 households in the
-   sample skip the test, and all their households are kept.
-3. `generate_with_multi_size_rejection` draws 1.5 times the requested number of households,
-   applies rejection, and draws fresh top-up batches until exactly `n_households` households are
-   accepted. It keeps the household-size mix of the first draw, and the output has no duplicated
-   households.
-4. `fit_em_with_restarts` keeps the restart with the lowest BIC, and `select_model_grid` searches
-   a grid of $(G, M)$ values.
-5. `gibbs_universal` is a Gibbs sampler adapted from `Gibbs_universal.m`, with symmetric
-   Dirichlet priors in place of the MATLAB stick-breaking priors on the class weights. The
-   pipeline does not use it.
+   distributions for each size. A household's two features are the rounded mean absolute
+   differences between its first listed member and each other member, in ordinal age positions
+   and in coarse employment groups (in place of sex). For two-person households the mean is the
+   paper's pairwise difference. The rounded age difference is then grouped into 5 bins.
+2. I compute $c$ only over cells where both distributions are positive, cap it at 3 (close to the
+   value of 2.97 reported in the paper) and clip the acceptance probability at 1, so cells where
+   $f_2/f_1$ exceeds 3 stay below their target share. A household size with fewer than 30 sample
+   households with valid features skips the test, and all its households are kept.
+3. `generate_with_multi_size_rejection` returns exactly `n_households` households. It draws 1.5
+   times that number and fixes a quota for each household size from this first draw, scaled to
+   `n_households`. Accepted households fill the quotas and any beyond a quota are discarded. While
+   a quota is short, it draws a fresh batch of `max(ceil(1.7 * shortfall), 200)` households and
+   filters it against that batch's own proposal distribution, and it raises `RuntimeError` after
+   10 batches. The output keeps the size mix of the first draw, and no household appears twice.
+
+Two parts differ from the MATLAB scripts but follow the paper (Sec. 4.2): `fit_em_with_restarts`
+keeps the restart with the highest log-likelihood, which for fixed $G$ and $M$ is the lowest BIC,
+and `select_model_grid` runs the $(G, M)$ grid search. I also adapted `Gibbs_universal.m`, which
+the paper does not describe, as `gibbs_universal`, with symmetric Dirichlet priors in place of the
+MATLAB stick-breaking priors on the class weights. The pipeline does not use it.
 
 Extensions I use in my own research are not part of this package.
 
@@ -88,8 +93,8 @@ flowchart TD
     csv[("merged CSV")] --> load["io.load_csv"]
     load --> prep["io.prepare_from_merged_table"]
     prep -->|"grpdata, indgid, inddata"| fit["em.fit_em_with_restarts"]
-    fit -->|"once per restart"| core["em.em_multilevel_across_universal"]
-    core -->|"restart with lowest BIC"| params["EMResult"]
+    fit -->|"calls once per restart"| core["em.em_multilevel_across_universal"]
+    fit -->|"restart with lowest BIC"| params["EMResult"]
     params --> gen["synthesis_eval.generate_synthetic_population"]
     gen --> raw["synthetic_raw"]
     params --> draw
@@ -102,6 +107,7 @@ flowchart TD
     prep -->|"input sample as target"| feat
     filt -->|"exactly n_households"| final["synthetic_final"]
     final --> npz[("result .npz")]
+    params -->|"parameters, likelihood trace, converged flag"| npz
     prep -.-> grid["em.select_model_grid"]
     grid -.->|"once per G, M pair"| fit
     prep -.-> gibbs["gibbs.gibbs_universal"]
@@ -117,26 +123,27 @@ to an `.npz` file. `synthetic_raw` is a separate draw without rejection that `fi
 returns for comparison. Dashed arrows are functions you call yourself. EM uses `kernels.sum_eik`
 and `kernels.logsumexp`.
 
-## Same as the original, and different
+## Comparison with the MATLAB code
 
 | Component | Original MATLAB | This package | Status |
 | --- | --- | --- | --- |
 | Model with universal individual classes | `EM_multilevel_across.m` | `em.em_multilevel_across_universal` | Same |
 | Model with class-specific individual classes | `EM_multilevel.m` | Not included | Not ported |
-| EM start | Normalized Gamma(1, `con`) draws, or an optional tensor-factorization start | Normalized Gamma(1, `concentration`) draws only; in both versions the scale cancels after normalization, so it does not change the start | Tensor start dropped |
-| E-step, M-step, log-likelihood | `EM_multilevel_across.m` | Same updates in the same order; floors values at 1e-12 where MATLAB adds machine epsilon | Same |
-| Stopping rule | Relative change of the log-likelihood at most `tol`, checked from iteration 3; at most `maxIter - 1` iterations | Same rule, checked from iteration 2; at most `max_iter` iterations; adds a `converged` flag | Same rule |
+| EM start | Normalized Gamma(1, `con`) draws, an optional tensor-factorization start, or user-supplied values (`initial`) | Normalized Gamma(1, `concentration`) draws or user-supplied values (`init`); no tensor start. The scale cancels after normalization in both versions, so `--concentration` has no effect on EM | Different |
+| E-step, M-step, log-likelihood | `EM_multilevel_across.m` | Same updates in the same order. Adds 1e-12 where MATLAB adds machine epsilon, and also floors denominators and log arguments at 1e-12 | Same |
+| Stopping rule | Relative change of the log-likelihood at most `tol`, checked from iteration 3; at most `maxIter - 1` iterations | Same rule, checked from iteration 2; at most `max_iter` iterations; adds a `converged` flag | Same |
 | Parameter count and BIC | `run_multilevel_1.m`: best log-likelihood of the run, log of the number of individuals | `em.count_parameters_universal`, `em.bic_score` | Same |
-| Restarts | 20 runs saved; `run_create_2.m` uses a run picked by hand | `em.fit_em_with_restarts` keeps the lowest BIC | Different |
-| G and M search | Loads a precomputed `bic.mat`; the grid code is not in the repository | `em.select_model_grid` | Added |
+| Restarts | 20 runs saved; `run_create_2.m` uses a run picked by hand | `em.fit_em_with_restarts` keeps the lowest BIC (highest log-likelihood), as in the paper, Sec. 4.2 | Different |
+| G and M search | Loads a precomputed `bic.mat`; the grid code is not in the repository | `em.select_model_grid`, the grid search described in the paper, Sec. 4.2 | Added |
 | Gibbs sampler | Stick-breaking priors on class weights with resampled concentration parameters; returns every draw | Symmetric Dirichlet priors on all parameters; returns posterior means after burn-in and thinning, and class-label traces | Different |
 | Input preparation | Sorts rows, shifts each column to a minimum of 1, computes household size from row counts and inserts it as the fourth household attribute | Same sort and shift; household size must already be a column and is shifted with the others; household ids are remapped to 1..N | Different |
-| Generation | Household class, household attributes, members from the size attribute; member attributes from the class mixture; 10 times the number of sample households | Same distribution; draws and returns each member's class; generates `n_households` | Same model |
-| Rejection scope | Two-person households, one pass, sample as target | Every size of two or more, one target and proposal per size, sample as target | Different |
-| Rejection features | Absolute differences of the raw age and sex codes, plus 1 | Mean difference to the first member; ordinal age in 5 bins; employment groups | Different |
-| Constant $c$ | Maximum over all cells | Maximum over cells where both distributions are positive, capped at 3 | Different |
-| Output households | Rejects from 8 stacked copies of the synthetic rows; count not controlled | Redraws until exactly `n_households`; no duplicates | Different |
-| Evaluation | Cramér's V with smoothing 1e-6; marginals with `sumdims`; figures | Same Cramér's V formula with smoothing 1e-12 (`cramer_v_from_counts`); `marginal_distribution`; no figures | Same formulas |
+| Generation | Household class, household attributes, members from the size attribute; member attributes from the class mixture; 10 times the number of sample households | Same distribution; draws and returns each member's class; generates `n_households` | Same |
+| Rejection scope | Two-person households, one pass, sample as target | Every size of two or more, one target and proposal per size, sample as target; sizes with fewer than 30 valid sample households are skipped | Different |
+| Rejection features | Absolute differences of the raw age and sex codes, plus 1 | Rounded mean absolute differences to the first member, in ordinal age positions (then 5 bins) and in employment groups | Different |
+| Constant $c$ | Maximum over all cells | Maximum over cells where both distributions are positive, capped at 3; acceptance probability clipped at 1 | Different |
+| Output households | Rejects from 8 stacked copies of the synthetic rows; count not controlled | Exactly `n_households`: per-size quotas from the first draw, filled by fresh batches that are each filtered against their own proposal distribution | Different |
+| Evaluation | Cramér's V with smoothing 1e-6; marginals with `sumdims` | Same Cramér's V formula with smoothing 1e-12 (`cramer_v_from_counts`); `marginal_distribution` | Same |
+| Figures | `run_draw_figures_3.m` and plots in the other scripts | Not included | Not ported |
 | Helpers | `int_hist.c`, `sum_eik.c`, `mnrnd_new.m`, `logsumexp.m`, `sumdims.m`, `randgamma.c` | `kernels.py` ports all but `randgamma`, which no MATLAB script calls; `sum_eik` adds a range check and `mnrnd_new` normalizes rows | Same |
 
 ## Install, run and reproduce
@@ -169,7 +176,9 @@ All checks passed!
 
 The tests use small arrays defined inline. They check shapes, normalization and label ranges for
 the helpers, EM, the Gibbs sampler and the generator, and run the pipeline end to end. Their
-inputs fall under the 30-household guard, so they do not test acceptance rates.
+inputs fall under the 30-household guard, so they do not test acceptance rates. No test compares
+results with MATLAB output; the comparison table comes from reading the two code bases side by
+side.
 
 ### Toy example
 
@@ -179,11 +188,9 @@ hm-popsyn-run --input examples/toy_merged.csv --output outputs/toy_result.npz \
     --G 4 --M 6 --n-households 1000 --n-restarts 2 --max-iter 500 --tol 1e-6 --seed 1
 ```
 
-The first command writes 500 households and 1287 individuals of random codes to
-`examples/toy_merged.csv`, identical to the committed file. The second fits EM with two restarts,
-generates 1000 households with rejection, prints diagnostics for each rejection batch and writes
-`outputs/toy_result.npz`. It took about 15 seconds in my test run.
-[examples/README.md](examples/README.md) shows the output and how to read the result file.
+These commands rewrite the committed toy table and write a synthetic population of 1000 households
+to `outputs/toy_result.npz`; [examples/README.md](examples/README.md) shows the output and how to
+read the result file.
 
 `hm-popsyn-run --help` lists all options. The command defaults to 5 restarts, 1000 EM iterations,
 `--tol 1e-8` and `--seed 12345`. Called directly, `fit_em_with_restarts` defaults to the settings
@@ -215,7 +222,7 @@ as the attribute it maps to groups. The default lookup tables (`AGE_CODE_TO_ORDE
 `EMPLOY_CODE_TO_GROUP` in `synthesis_eval.py`) assume one specific coding. For other codings, pass
 your own tables to `fit_and_generate` through `age_code_to_order` and `employ_code_to_group`; the
 command-line tool always uses the defaults. The age binning assumes 18 ordinal positions
-(`AGE_DIFF_MAX`) in both cases. Members with codes outside the tables are ignored, and a household
+(`AGE_DIFF_MAX = 17`) in both cases. Members with codes outside the tables are ignored, and a household
 with no valid pair that includes its first member skips the test and is kept.
 
 ### Python API
@@ -247,10 +254,10 @@ The toy codes are independent random numbers, so these numbers show only that th
 
 ## Attribution and license
 
-The model and the original MATLAB code are by Lijun Sun, and the paper is co-authored by Alexander
-Erath and Ming Cai. The MATLAB code is published at
-<https://github.com/mcgill-smart-transport/population_synthesis_hierarchical> under the MIT
-License. This repository is my Python port of it. It contains no survey or other real data:
+The method is by Sun, Erath and Cai; the MATLAB code, linked above, is by Lijun Sun and released
+under the MIT License. Its README notes that some functions come from the MATLAB Tensor Toolbox
+and the [Lightspeed](https://github.com/tminka/lightspeed) toolbox; `logsumexp.m`, which I
+ported, credits Tom Minka. This repository contains no survey or other real data:
 `examples/toy_merged.csv` holds random integer codes written by `examples/make_toy_data.py`.
 
 The package is released under the MIT License ([LICENSE](LICENSE)). The license keeps the original

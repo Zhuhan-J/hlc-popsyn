@@ -75,9 +75,13 @@ diagnostics, and the first block of the output was:
 
 The first draw has 1500 households (1.5 times the request). `M` in these lines is the constant $c$
 from the main README, and `f1=0` counts feature cells that hold sample households of that size but
-no synthetic ones. Six more blocks with the same two tables follow, one for each top-up batch
-(`[DIAG-REJECT] Top-up batch 1` to `Top-up batch 6`), until exactly 1000 households are accepted.
-The acceptance rates are specific to this random data.
+no synthetic ones. The first draw also fixes a quota for each household size, scaled to 1000
+households. Six more blocks with the same two tables follow, one for each top-up batch
+(`[DIAG-REJECT] Top-up batch 1` to `Top-up batch 6`). Each batch has
+`max(ceil(1.7 * shortfall), 200)` households and is filtered against its own proposal
+distribution, and accepted households beyond a size's quota are discarded. The run stops when all
+quotas are filled, at exactly 1000 households. The acceptance rates are specific to this random
+data.
 
 ## 3. Inspect the result
 
@@ -113,14 +117,20 @@ final log-lik       -10712.648
 
 EM converged after 369 iterations in the restart that was kept. The final population has exactly
 1000 households, and the number of individuals follows from the generated household sizes. All
-codes and class labels are 1-based. `allow_pickle=True` is needed because the per-attribute
-parameter arrays `log_phi_g` and `log_phi_m` are stored as object arrays, so I only load files I
-created myself this way.
+codes and class labels are 1-based. `allow_pickle=True` is needed because `log_phi_g` and
+`log_phi_m` are stored as object arrays. Use it only on files you created yourself.
 
 ## 4. Choose G and M by BIC
 
 ```python
-from hm_popsyn import load_csv, prepare_from_merged_table, select_model_grid
+import numpy as np
+
+from hm_popsyn import (
+    generate_synthetic_population,
+    load_csv,
+    prepare_from_merged_table,
+    select_model_grid,
+)
 
 data = prepare_from_merged_table(load_csv("examples/toy_merged.csv"))
 best, best_summary, grid = select_model_grid(
@@ -130,6 +140,19 @@ best, best_summary, grid = select_model_grid(
 for s in grid:
     print(f"G={s.G} M={s.M} logL={s.best_log_likelihood:.1f} BIC={s.bic:.1f}")
 print("selected:", best_summary.G, best_summary.M)
+
+# Draw from the selected model directly. EMResult stores log probabilities, and this path
+# applies no rejection step.
+synth = generate_synthetic_population(
+    n_households=200,
+    pi_g=best.pi_g,
+    pi_m=best.pi_m,
+    phi_g=[np.exp(x) for x in best.log_phi_g],
+    phi_m=[np.exp(x) for x in best.log_phi_m],
+    household_size_col=3,
+    rng=np.random.default_rng(0),
+)
+print(synth.household_data.shape, synth.individual_data.shape)
 ```
 
 ```text
@@ -138,9 +161,11 @@ G=2 M=6 logL=-10756.1 BIC=22378.5
 G=4 M=3 logL=-10768.4 BIC=22224.3
 G=4 M=6 logL=-10711.4 BIC=22518.2
 selected: 2 3
+(200, 4) (505, 5)
 ```
 
 Each grid cell runs `fit_em_with_restarts`. On these random codes the smallest model has the lowest
-BIC. `best` is the fitted `EMResult` of the selected cell; to generate from it, pass the chosen `G`
-and `M` to `hm-popsyn-run` or `fit_and_generate`, or pass its parameters to
-`generate_synthetic_population`.
+BIC. To generate with the rejection step, refit with the chosen `G` and `M` through `hm-popsyn-run`
+or `fit_and_generate`. To draw from `best` without rejection, pass `best.pi_g`, `best.pi_m` and
+`np.exp` of `best.log_phi_g` and `best.log_phi_m` to `generate_synthetic_population`, as in the
+last lines above. Passing the log arrays unchanged raises no error and gives wrong probabilities.
